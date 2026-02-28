@@ -1,0 +1,47 @@
+name: 'App Store IAP Discount Price Updater'
+description: 'Apply configurable discounts to App Store in-app purchase prices across ~175 territories per product.'
+author: 'Idlevelopment'
+
+inputs:
+  apple-key-id:
+    description: 'App Store Connect API Key ID (Users & Access → Integrations → Keys)'
+    required: true
+  apple-issuer-id:
+    description: 'App Store Connect API Issuer ID (same page, shown at the top)'
+    required: true
+  apple-private-key:
+    description: 'Full contents of the downloaded .p8 key file, including header/footer lines'
+    required: true
+  rules-path:
+    description: 'Path to the JSON file containing pricing rules, relative to the repository root'
+    required: false
+    default: 'appstore-pricing-rules.json'
+  dry-run:
+    description: 'Set to "true" to log planned changes without modifying anything in App Store Connect'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.14'
+
+    - name: Install dependencies
+      shell: bash
+      run: pip install -r "${{ github.action_path }}/scripts/requirements.txt"
+
+    - name: Update App Store IAP pricing
+      shell: bash
+      env:
+        APPLE_KEY_ID: ${{ inputs.apple-key-id }}
+        APPLE_ISSUER_ID: ${{ inputs.apple-issuer-id }}
+        APPLE_PRIVATE_KEY: ${{ inputs.apple-private-key }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        RULES_PATH: ${{ inputs.rules-path }}
+      run: python "${{ github.action_path }}/scripts/update_pricing.py"
+
+branding:
+  icon: 'tag'
+  color: 'blue'
