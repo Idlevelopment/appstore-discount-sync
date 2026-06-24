@@ -234,8 +234,27 @@ def get_price_points_for_territory(
     )
 
 
-def best_price_point(points: list[dict], target: float) -> dict:
-    """Return the price point closest to target (may be slightly above or below)."""
+VALID_ROUNDING = ("nearest", "up", "down")
+
+
+def best_price_point(
+    points: list[dict], target: float, rounding: str = "nearest"
+) -> dict:
+    """Return the chosen price point for target under the given rounding strategy.
+
+    nearest — closest tier, above or below (default).
+    up      — cheapest tier >= target; falls back to the highest tier if every
+              tier is below target.
+    down    — dearest tier <= target; falls back to the lowest tier if every
+              tier is above target.
+
+    `points` is assumed sorted ascending by price (as returned by
+    get_price_points_for_territory).
+    """
+    if rounding == "up":
+        return next((p for p in points if p["price"] >= target), points[-1])
+    if rounding == "down":
+        return next((p for p in reversed(points) if p["price"] <= target), points[0])
     return min(points, key=lambda p: abs(p["price"] - target))
 
 
@@ -339,12 +358,23 @@ def resolve_multiplier(rule: dict) -> tuple[float, str]:
     return multiplier, f"multiplier={multiplier}"
 
 
+def resolve_rounding(rule: dict) -> str:
+    """Return the tier-rounding strategy for a rule (default 'nearest')."""
+    rounding = rule.get("rounding", "nearest")
+    if rounding not in VALID_ROUNDING:
+        raise ValueError(
+            f"rounding must be one of {VALID_ROUNDING}, got {rounding!r}"
+        )
+    return rounding
+
+
 def process_rule(hdrs: dict, rule: dict, dry_run: bool) -> None:
     src_iap_id = rule["sourceIapId"]
     tgt_iap_id = rule["targetIapId"]
     multiplier, label = resolve_multiplier(rule)
+    rounding = resolve_rounding(rule)
 
-    print(f"\nRule: [{src_iap_id}] → [{tgt_iap_id}]  {label}")
+    print(f"\nRule: [{src_iap_id}] → [{tgt_iap_id}]  {label}  rounding={rounding}")
 
     # --- Source: read schedule, base territory, and prices for every country ---
     src_schedule = get_price_schedule(hdrs, src_iap_id)
@@ -368,7 +398,7 @@ def process_rule(hdrs: dict, rule: dict, dry_run: bool) -> None:
             skipped.append(territory_id)
             continue
 
-        chosen = best_price_point(points, target_price)
+        chosen = best_price_point(points, target_price, rounding)
         price_point_map[territory_id] = chosen["id"]
         price_log.append((territory_id, src_price, target_price, chosen["price"]))
 

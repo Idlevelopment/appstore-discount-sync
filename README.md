@@ -18,7 +18,7 @@ price(target, territory) = price(source, territory) × factor
 
 where `factor` is either a discount (`1 − discountPercent / 100`) or an explicit `multiplier` — for example `multiplier: 3` makes the target always **3× the source**. Each rule sets exactly one of the two.
 
-The script reads the source IAP's current price in **every territory** (~175 countries), applies the factor, then picks the **closest available Apple price tier** for the target IAP in that territory. All territories are updated in a single API request.
+The script reads the source IAP's current price in **every territory** (~175 countries), applies the factor, then picks an available Apple price tier for the target IAP in that territory. By default it picks the **closest** tier, but each rule can choose to always round **up** or **down** instead (see `rounding` below). All territories are updated in a single API request.
 
 ## Setup
 
@@ -108,7 +108,8 @@ jobs:
   {
     "sourceIapId": "6618358137",
     "targetIapId": "6589135761",
-    "multiplier": 3
+    "multiplier": 3,
+    "rounding": "up"
   }
 ]
 ```
@@ -119,8 +120,9 @@ jobs:
 | `targetIapId` | string | Numeric Apple ID of the IAP to update |
 | `discountPercent` | number | Discount percentage (exclusive: 0–100). Mutually exclusive with `multiplier`. |
 | `multiplier` | number | Factor applied to the source price (> 0). E.g. `3` = target is 3× the source, `0.5` = half. Mutually exclusive with `discountPercent`. |
+| `rounding` | string | Optional. How the computed target snaps to an available tier: `nearest` (default), `up` (cheapest tier ≥ target), or `down` (dearest tier ≤ target). |
 
-Each rule must set **exactly one** of `discountPercent` or `multiplier`.
+Each rule must set **exactly one** of `discountPercent` or `multiplier`. `rounding` is optional and defaults to `nearest`.
 
 ## Custom rules file path
 
