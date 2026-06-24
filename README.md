@@ -78,7 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: Idlevelopment/appstore-discount-sync@v1.0
+      - uses: Idlevelopment/appstore-discount-sync@v1
         with:
           apple-key-id: ${{ secrets.APPLE_KEY_ID }}
           apple-issuer-id: ${{ secrets.APPLE_ISSUER_ID }}
@@ -127,7 +127,7 @@ Each rule must set **exactly one** of `discountPercent` or `multiplier`.
 If you want to keep the rules file in a different location:
 
 ```yaml
-- uses: Idlevelopment/appstore-discount-sync@v1.0
+- uses: Idlevelopment/appstore-discount-sync@v1
   with:
     apple-key-id: ${{ secrets.APPLE_KEY_ID }}
     apple-issuer-id: ${{ secrets.APPLE_ISSUER_ID }}
