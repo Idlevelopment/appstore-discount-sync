@@ -10,13 +10,15 @@ This action works around that by reading the source IAP's **actual local price i
 
 ## How it works
 
-For each rule you provide in the file, the action computes the discounted price as:
+For each rule you provide in the file, the action computes the target price as:
 
 ```
-price(target, territory) = price(source, territory) × (1 − discountPercent / 100)
+price(target, territory) = price(source, territory) × factor
 ```
 
-The script reads the source IAP's current price in **every territory** (~175 countries), applies the discount, then picks the **closest available Apple price tier** for the target IAP in that territory. All territories are updated in a single API request.
+where `factor` is either a discount (`1 − discountPercent / 100`) or an explicit `multiplier` — for example `multiplier: 3` makes the target always **3× the source**. Each rule sets exactly one of the two.
+
+The script reads the source IAP's current price in **every territory** (~175 countries), applies the factor, then picks the **closest available Apple price tier** for the target IAP in that territory. All territories are updated in a single API request.
 
 ## Setup
 
@@ -106,7 +108,7 @@ jobs:
   {
     "sourceIapId": "6618358137",
     "targetIapId": "6589135761",
-    "discountPercent": 25
+    "multiplier": 3
   }
 ]
 ```
@@ -115,7 +117,10 @@ jobs:
 |---|---|---|
 | `sourceIapId` | string | Numeric Apple ID of the IAP to read prices from |
 | `targetIapId` | string | Numeric Apple ID of the IAP to update |
-| `discountPercent` | number | Discount percentage (exclusive: 0–100) |
+| `discountPercent` | number | Discount percentage (exclusive: 0–100). Mutually exclusive with `multiplier`. |
+| `multiplier` | number | Factor applied to the source price (> 0). E.g. `3` = target is 3× the source, `0.5` = half. Mutually exclusive with `discountPercent`. |
+
+Each rule must set **exactly one** of `discountPercent` or `multiplier`.
 
 ## Custom rules file path
 

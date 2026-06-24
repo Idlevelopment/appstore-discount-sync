@@ -3,11 +3,15 @@
 
 For each rule in the pricing rules file:
   For every country/territory:
-    price(target, territory) = price(source, territory) * (1 - discountPercent / 100)
+    price(target, territory) = price(source, territory) * factor
 
-The discount is applied individually per territory using the source IAP's actual
+where factor is either (1 - discountPercent / 100) or an explicit multiplier
+(e.g. 3 to make the target 3x the source). Exactly one of the two fields must
+be set per rule.
+
+The factor is applied individually per territory using the source IAP's actual
 local price in each country. Apple's price tiers differ per territory, so the
-script finds the closest available tier to the discounted price.
+script finds the closest available tier to the computed price.
 All territories are set as explicit manual prices in one request.
 
 How to find an IAP's Apple ID:
@@ -303,17 +307,44 @@ def apply_prices_bulk(
 # Rule processing
 # ---------------------------------------------------------------------------
 
+def resolve_multiplier(rule: dict) -> tuple[float, str]:
+    """Return (multiplier, label) from a rule's discountPercent or multiplier.
+
+    Exactly one of the two fields must be present. The multiplier is the factor
+    applied to the source price: target = source * multiplier.
+    """
+    has_discount = "discountPercent" in rule
+    has_multiplier = "multiplier" in rule
+
+    if has_discount and has_multiplier:
+        raise ValueError(
+            "Specify either 'discountPercent' or 'multiplier', not both."
+        )
+    if not has_discount and not has_multiplier:
+        raise ValueError(
+            "Each rule must specify either 'discountPercent' or 'multiplier'."
+        )
+
+    if has_discount:
+        discount = rule["discountPercent"]
+        if not (0 < discount < 100):
+            raise ValueError(
+                f"discountPercent must be between 0 and 100 (exclusive), got {discount}"
+            )
+        return 1 - discount / 100, f"discount={discount}%"
+
+    multiplier = rule["multiplier"]
+    if multiplier <= 0:
+        raise ValueError(f"multiplier must be greater than 0, got {multiplier}")
+    return multiplier, f"multiplier={multiplier}"
+
+
 def process_rule(hdrs: dict, rule: dict, dry_run: bool) -> None:
     src_iap_id = rule["sourceIapId"]
     tgt_iap_id = rule["targetIapId"]
-    discount = rule["discountPercent"]
+    multiplier, label = resolve_multiplier(rule)
 
-    if not (0 < discount < 100):
-        raise ValueError(
-            f"discountPercent must be between 0 and 100 (exclusive), got {discount}"
-        )
-
-    print(f"\nRule: [{src_iap_id}] → [{tgt_iap_id}]  discount={discount}%")
+    print(f"\nRule: [{src_iap_id}] → [{tgt_iap_id}]  {label}")
 
     # --- Source: read schedule, base territory, and prices for every country ---
     src_schedule = get_price_schedule(hdrs, src_iap_id)
@@ -328,7 +359,7 @@ def process_rule(hdrs: dict, rule: dict, dry_run: bool) -> None:
     skipped: list[str] = []
 
     for i, (territory_id, src_price) in enumerate(src_prices.items(), 1):
-        target_price = round(src_price * (1 - discount / 100), 2)
+        target_price = round(src_price * multiplier, 2)
         print(f"  [{i}/{len(src_prices)}] {territory_id}: {src_price} → {target_price}",
               end="\r", flush=True)
 
