@@ -2,6 +2,8 @@
 
 A GitHub Action that automatically syncs App Store in-app purchase prices across products with a configurable discount — applied individually for every country using Apple's actual local price tiers.
 
+> Google Play equivalent: [play-discount-sync](https://github.com/Idlevelopment/play-discount-sync)
+
 ## Why this exists
 
 If you have two IAPs where one should always be priced at a discount relative to the other, Apple's built-in price propagation won't reliably maintain that relationship. When you set a price in one territory and let Apple auto-calculate the rest, it snaps each country to whatever tier it considers appropriate — which can result in the discount percentage varying significantly from country to country, or disappearing entirely in some territories.
