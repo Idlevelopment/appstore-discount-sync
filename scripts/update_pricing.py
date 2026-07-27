@@ -40,6 +40,10 @@ from pathlib import Path
 
 BASE_URL = "https://api.appstoreconnect.apple.com"
 
+# Territories per filter[territory] request. Keeps the query string well within
+# any URL-length limit while still covering every territory in a few sweeps.
+TERRITORY_FILTER_CHUNK = 50
+
 RULES_PATH = Path(os.environ.get("RULES_PATH", "appstore-pricing-rules.json"))
 
 
@@ -215,23 +219,57 @@ def get_all_prices(hdrs: dict, schedule_id: str) -> dict[str, float]:
 # Price points
 # ---------------------------------------------------------------------------
 
-def get_price_points_for_territory(
-    hdrs: dict, iap_id: str, territory: str
-) -> list[dict]:
-    """Return all available price points for an IAP in a specific territory.
+def get_price_points_by_territory(
+    hdrs: dict, iap_id: str, territories: list[str]
+) -> dict[str, list[dict]]:
+    """Return {territory_id: price points sorted ascending} for an IAP.
 
-    Uses GET /v2/inAppPurchases/{id}/pricePoints?filter[territory]=TERRITORY.
-    Results are sorted ascending by customerPrice.
+    Uses GET /v2/inAppPurchases/{id}/pricePoints with a comma-separated
+    filter[territory], so every territory is covered by a single paginated
+    sweep instead of one request per territory.
+
+    `fields[inAppPurchasePricePoints]` asks for the territory relationship
+    inline, which keeps the payload small and avoids a separate include.
     """
-    points = fetch_all(
-        f"{BASE_URL}/v2/inAppPurchases/{iap_id}/pricePoints",
-        hdrs,
-        {"filter[territory]": territory, "limit": 8000},
-    )
-    return sorted(
-        [{"id": p["id"], "price": float(p["attributes"]["customerPrice"])} for p in points],
-        key=lambda x: x["price"],
-    )
+    grouped: dict[str, list[dict]] = {}
+    for chunk in _chunked(territories, TERRITORY_FILTER_CHUNK):
+        points = fetch_all(
+            f"{BASE_URL}/v2/inAppPurchases/{iap_id}/pricePoints",
+            hdrs,
+            {
+                "filter[territory]": ",".join(chunk),
+                "fields[inAppPurchasePricePoints]": "customerPrice,territory",
+                "limit": 8000,
+            },
+        )
+        matched = 0
+        for p in points:
+            territory_id = (
+                p.get("relationships", {})
+                .get("territory", {})
+                .get("data", {})
+                .get("id")
+            )
+            if not territory_id:
+                continue
+            matched += 1
+            grouped.setdefault(territory_id, []).append(
+                {"id": p["id"], "price": float(p["attributes"]["customerPrice"])}
+            )
+        if points and not matched:
+            raise LookupError(
+                f"Price points for IAP {iap_id} came back without an inline "
+                "territory relationship — cannot group them by territory."
+            )
+
+    for points in grouped.values():
+        points.sort(key=lambda x: x["price"])
+    return grouped
+
+
+def _chunked(items: list[str], size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
 
 
 VALID_ROUNDING = ("nearest", "up", "down")
@@ -368,7 +406,46 @@ def resolve_rounding(rule: dict) -> str:
     return rounding
 
 
-def process_rule(hdrs: dict, rule: dict, dry_run: bool) -> None:
+class Caches:
+    """Per-run memo of API reads so rules sharing an IAP don't re-fetch it."""
+
+    def __init__(self) -> None:
+        # src_iap_id -> (base_territory, {territory: price})
+        self._sources: dict[str, tuple[str, dict[str, float]]] = {}
+        # tgt_iap_id -> (territories already fetched, {territory: price points})
+        self._points: dict[str, tuple[set[str], dict[str, list[dict]]]] = {}
+
+    def source_prices(
+        self, hdrs: dict, src_iap_id: str
+    ) -> tuple[str, dict[str, float]]:
+        cached = self._sources.get(src_iap_id)
+        if cached:
+            print("  Source prices  : cached")
+            return cached
+
+        schedule = get_price_schedule(hdrs, src_iap_id)
+        base_territory = get_base_territory(hdrs, schedule)
+        prices = get_all_prices(hdrs, schedule["id"])
+        self._sources[src_iap_id] = (base_territory, prices)
+        return base_territory, prices
+
+    def price_points(
+        self, hdrs: dict, tgt_iap_id: str, territories: list[str]
+    ) -> dict[str, list[dict]]:
+        fetched, grouped = self._points.setdefault(tgt_iap_id, (set(), {}))
+        missing = [t for t in territories if t not in fetched]
+        if missing:
+            print(f"  Fetching price points for {len(missing)} territories...",
+                  end=" ", flush=True)
+            grouped.update(get_price_points_by_territory(hdrs, tgt_iap_id, missing))
+            fetched.update(missing)
+            print(f"{sum(len(v) for v in grouped.values())} points")
+        else:
+            print("  Price points   : cached")
+        return grouped
+
+
+def process_rule(hdrs: dict, rule: dict, dry_run: bool, caches: Caches) -> None:
     src_iap_id = rule["sourceIapId"]
     tgt_iap_id = rule["targetIapId"]
     multiplier, label = resolve_multiplier(rule)
@@ -377,23 +454,20 @@ def process_rule(hdrs: dict, rule: dict, dry_run: bool) -> None:
     print(f"\nRule: [{src_iap_id}] → [{tgt_iap_id}]  {label}  rounding={rounding}")
 
     # --- Source: read schedule, base territory, and prices for every country ---
-    src_schedule = get_price_schedule(hdrs, src_iap_id)
-    base_territory = get_base_territory(hdrs, src_schedule)
-    src_prices = get_all_prices(hdrs, src_schedule["id"])
+    base_territory, src_prices = caches.source_prices(hdrs, src_iap_id)
     print(f"  Base territory : {base_territory}")
     print(f"  Source territories: {len(src_prices)}")
 
-    # --- Per-territory: fetch target price points, apply discount, pick best tier ---
+    # --- Target: all price points for all territories in one paginated sweep ---
+    points_by_territory = caches.price_points(hdrs, tgt_iap_id, list(src_prices))
+
     price_point_map: dict[str, str] = {}
     price_log: list[tuple] = []  # (territory, src_price, target_price, chosen_price)
     skipped: list[str] = []
 
-    for i, (territory_id, src_price) in enumerate(src_prices.items(), 1):
+    for territory_id, src_price in src_prices.items():
         target_price = round(src_price * multiplier, 2)
-        print(f"  [{i}/{len(src_prices)}] {territory_id}: {src_price} → {target_price}",
-              end="\r", flush=True)
-
-        points = get_price_points_for_territory(hdrs, tgt_iap_id, territory_id)
+        points = points_by_territory.get(territory_id)
         if not points:
             skipped.append(territory_id)
             continue
@@ -401,8 +475,6 @@ def process_rule(hdrs: dict, rule: dict, dry_run: bool) -> None:
         chosen = best_price_point(points, target_price, rounding)
         price_point_map[territory_id] = chosen["id"]
         price_log.append((territory_id, src_price, target_price, chosen["price"]))
-
-    print()  # newline after progress line
 
     if skipped:
         print(
@@ -449,10 +521,11 @@ def main() -> None:
     token = generate_token(key_id, issuer_id, private_key)
     hdrs = auth_headers(token)
 
+    caches = Caches()
     errors: list[str] = []
     for rule in rules:
         try:
-            process_rule(hdrs, rule, dry_run)
+            process_rule(hdrs, rule, dry_run, caches)
         except Exception as exc:
             msg = f"FAILED [{rule.get('sourceIapId')} → {rule.get('targetIapId')}]: {exc}"
             print(f"\nERROR: {msg}", file=sys.stderr)
