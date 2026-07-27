@@ -30,6 +30,7 @@ Optional:
 Note on permissions: the API key must have at least the 'App Manager' role.
 """
 
+import base64
 import json
 import jwt as pyjwt
 import os
@@ -225,11 +226,11 @@ def get_price_points_by_territory(
     """Return {territory_id: price points sorted ascending} for an IAP.
 
     Uses GET /v2/inAppPurchases/{id}/pricePoints with a comma-separated
-    filter[territory], so every territory is covered by a single paginated
-    sweep instead of one request per territory.
+    filter[territory], so every territory is covered by a few paginated
+    sweeps instead of one request per territory.
 
-    `fields[inAppPurchasePricePoints]` asks for the territory relationship
-    inline, which keeps the payload small and avoids a separate include.
+    `include=territory` is what makes the API inline the relationship data;
+    asking for the field alone leaves it as a links-only relationship.
     """
     grouped: dict[str, list[dict]] = {}
     for chunk in _chunked(territories, TERRITORY_FILTER_CHUNK):
@@ -238,18 +239,13 @@ def get_price_points_by_territory(
             hdrs,
             {
                 "filter[territory]": ",".join(chunk),
-                "fields[inAppPurchasePricePoints]": "customerPrice,territory",
+                "include": "territory",
                 "limit": 8000,
             },
         )
         matched = 0
         for p in points:
-            territory_id = (
-                p.get("relationships", {})
-                .get("territory", {})
-                .get("data", {})
-                .get("id")
-            )
+            territory_id = _territory_of(p)
             if not territory_id:
                 continue
             matched += 1
@@ -258,13 +254,38 @@ def get_price_points_by_territory(
             )
         if points and not matched:
             raise LookupError(
-                f"Price points for IAP {iap_id} came back without an inline "
-                "territory relationship — cannot group them by territory."
+                f"Price points for IAP {iap_id} came back without a resolvable "
+                "territory — cannot group them by territory."
             )
 
     for points in grouped.values():
         points.sort(key=lambda x: x["price"])
     return grouped
+
+
+def _territory_of(price_point: dict) -> str | None:
+    """Territory ID of a price point, from the relationship or its encoded ID.
+
+    Preferred source is the inlined `territory` relationship. Some responses
+    return it links-only, in which case we fall back to the price point ID,
+    which is base64 JSON of the form {"s": iap, "t": territory, "p": tier}.
+    """
+    territory_id = (
+        price_point.get("relationships", {})
+        .get("territory", {})
+        .get("data", {})
+        .get("id")
+    )
+    if territory_id:
+        return territory_id
+
+    raw = price_point.get("id", "")
+    try:
+        padded = raw + "=" * (-len(raw) % 4)
+        decoded = json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:
+        return None
+    return decoded.get("t")
 
 
 def _chunked(items: list[str], size: int):

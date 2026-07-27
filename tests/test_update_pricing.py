@@ -4,6 +4,8 @@
 Run with:  python3 -m unittest discover -s tests -p 'test_*.py'
 """
 
+import base64
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -129,6 +131,29 @@ class BestPricePointTest(unittest.TestCase):
 
     def test_down_below_lowest_falls_back_to_lowest(self):
         self.assertEqual(up.best_price_point(self.POINTS, 0.10, "down")["id"], "a")
+
+
+class TerritoryOfTest(unittest.TestCase):
+    def _encoded_id(self, payload: dict) -> str:
+        raw = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+        return raw.rstrip("=")  # Apple's IDs come back unpadded
+
+    def test_prefers_inline_relationship(self):
+        point = {
+            "id": self._encoded_id({"s": "1", "t": "DEU", "p": "10000"}),
+            "relationships": {"territory": {"data": {"id": "USA"}}},
+        }
+        self.assertEqual(up._territory_of(point), "USA")
+
+    def test_falls_back_to_encoded_id(self):
+        point = {
+            "id": self._encoded_id({"s": "1", "t": "JPN", "p": "10000"}),
+            "relationships": {"territory": {"links": {"related": "https://x"}}},
+        }
+        self.assertEqual(up._territory_of(point), "JPN")
+
+    def test_returns_none_when_unresolvable(self):
+        self.assertIsNone(up._territory_of({"id": "not-base64-json"}))
 
 
 class ResolveRoundingTest(unittest.TestCase):
